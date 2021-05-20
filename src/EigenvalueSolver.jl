@@ -10,6 +10,9 @@ using GenericSVD
 using Statistics
 using SmithNormalForm  # to add: pkg> add https://github.com/wildart/SmithNormalForm.jl.git
 
+import TaylorSeries
+
+
 include("PolytopeUtils.jl")
 
 # Main function.
@@ -387,13 +390,20 @@ end
 
 # Compute an admissible tuple for a dense system of polynomials f by incrementing the degree
 # until our criterion is satisfied.
-function findAdmissibleTuple_dense(f, x, DMAX; complex = false, rankTol = 1e3 * eps(), verbose::Bool=false)
+function findAdmissibleTuple_dense(f, x, DMAX; complex = false, rankTol = 1e3 * eps(), verbose::Bool=false, trySemiregular::Bool=false)
     s = length(f)
     ds = fill(0, s)
     for i = 1:s
         ds[i] = maximum(degree.(terms(f[i])))
     end
-    dmax = maximum(ds)
+    if trySemiregular
+        varTaylor = TaylorSeries.Taylor1(Integer,sum(ds))
+        HScandidate = prod(vv -> (1-varTaylor^vv),ds)/(1-varTaylor)^length(x)
+        dmax = max(findfirst(vv -> vv <= 0,HScandidate.coeffs)-1,maximum(ds))
+    else
+        dmax = maximum(ds)
+    end
+    verbose && println("degree = ", dmax)
     oldsupport = getMonomials(x, dmax)
     oldshifts = [getMonomials(x, dmax - ds[i]) for i = 1:s]
     Σα0 = getMonomials(x, 1)
@@ -813,10 +823,10 @@ function solve_CI_unmixed(f, x, A, α; AT = nothing, verbose::Bool=false)
 end
 
 # Solve an overdetermined system of dense equations.
-function solve_OD_dense(f, x; maxdeg = 100, complex = false, verbose::Bool=false)
+function solve_OD_dense(f, x; maxdeg = 100, complex = false, verbose::Bool=false, trySemiregular::Bool=false)
     verbose && println("Looking for an admissible tuple")
     cokernel, support, chck, topdeg, AT =
-        findAdmissibleTuple_dense(f, x, maxdeg; complex = true, verbose = verbose)
+        findAdmissibleTuple_dense(f, x, maxdeg; complex = true, verbose = verbose, trySemiregular = trySemiregular)
     (A₀, E, D) = AT
     sol = solve_EV(f, x, A₀, E, D; N = cokernel, complex = complex, check_criterion = false, verbose = verbose)
     return sol
