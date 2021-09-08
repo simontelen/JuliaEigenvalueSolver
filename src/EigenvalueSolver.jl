@@ -223,31 +223,7 @@ function simulDiag_schur_toric(M; clustering = false, tol = 1e-4, complex = fals
 end
 
 # This is a function for clustering the eigenvalues.
-function cluster(v; tol = 1e-4)
-    clusters = fill(zero(typeof(v[1])), 0)
-    inds = fill([0], 0)
-    currentcluster = [v[1]]
-    currentinds = [1]
-    remaininginds = 2:length(v)
-    lastind = 1
-    while length(remaininginds) > 0
-        nextind = remaininginds[argmin(abs.(v[remaininginds] .- v[lastind]))]
-        if abs(v[nextind] - v[lastind]) < tol * (abs(v[lastind]) + 1)
-            push!(currentcluster, v[nextind])
-            push!(currentinds, nextind)
-        else
-            push!(clusters, mean(currentcluster))
-            push!(inds, currentinds)
-            currentcluster = [v[nextind]]
-            currentinds = [nextind]
-        end
-        remaininginds = setdiff(remaininginds, nextind)
-        lastind = nextind
-    end
-    push!(clusters, mean(currentcluster))
-    push!(inds, currentinds)
-    return clusters, inds
-end
+
 
 # Match the points in sol to the points in refsol by permuting them as defined by 'usedinds'
 # and compute the relative distance between the matched points.
@@ -279,7 +255,7 @@ function extractSolutions_fast(M, Σα0; tol = 1e-5, clustertol = 1e-7)
     eigenobj = eigen(transpose(Mg))
     eigenvals = eigenobj.values
     eigenvecs = eigenobj.vectors
-    clusters, inds = cluster(eigenvals; tol = clustertol)
+    clusters, inds = getClusters(eigenvals; tol = clustertol)
     monsol = []
     γ = size(Mg, 1)
     k = 1
@@ -807,12 +783,12 @@ function solve_CI_unmixed(f, x, A, α; AT = nothing)
 end
 
 # Solve an overdetermined system of dense equations.
-function solve_OD_dense(f, x; maxdeg = 100, complex = false)
+function solve_OD_dense(f, x; maxdeg = 100, complex = false, rankTol = 1e3*eps())
     println("Looking for an admissible tuple")
     cokernel, support, chck, topdeg, AT =
         findAdmissibleTuple_dense(f, x, maxdeg; complex = true)
     (A₀, E, D) = AT
-    sol = solve_EV(f, x, A₀, E, D; N = cokernel, complex = complex, check_criterion = false)
+    sol = solve_EV(f, x, A₀, E, D; N = cokernel, complex = complex, check_criterion = false, rankTol = rankTol)
     return sol
 end
 
