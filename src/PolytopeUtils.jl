@@ -61,11 +61,6 @@ function getCodegree(A)
     @polyvar x[1:size(A, 2)]
     f = sum([prod(x .^ (A[i, :])) for i = 1:size(A, 1)])
     P = newtonPolytope(f, x)
-    ILP = P.INTERIOR_LATTICE_POINTS
-    while size(ILP, 1) == 0
-        r += 1
-        P = newtonPolytope(f^r, x)
-        ILP = P.INTERIOR_LATTICE_POINTS
-    end
+    r = P.LATTICE_CODEGREE
     return r
 end

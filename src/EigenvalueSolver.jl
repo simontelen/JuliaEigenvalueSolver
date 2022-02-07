@@ -10,6 +10,8 @@ using GenericSVD
 using Statistics
 using SmithNormalForm  # to add: pkg> add https://github.com/wildart/SmithNormalForm.jl.git
 
+import TaylorSeries
+
 
 include("PolytopeUtils.jl")
 
@@ -41,6 +43,7 @@ function solve_EV(
     schurfac = false, #compute eigenvalues via Schur factorization
     filter = false, #filter the solutions at the end
     filtertol = 1e-6,
+    verbose::Bool=false, #print info
 )
     x = variables(f)
     n = length(x) # number of variables
@@ -48,56 +51,58 @@ function solve_EV(
     #-------------------------------------------------------------------------
     Σ = exptomon(D, x)
     if N == nothing
-        println("constructing resultant map...")
+        verbose && println("constructing Sylvester matrix...")
         σ = [exptomon(e, x) for e ∈ E[2:end]]
         @time Sylv = getRes(f, Σ, σ, x; complex = complex)
-        println("       Sylv is a matrix of size $(size(Sylv))")
+        verbose && println("       Sylv is a matrix of size $(size(Sylv))")
         #-------------------------------------------------------------------------
-        println("computing cokernel...")
+        verbose && println("computing cokernel...")
         if compress && size(Sylv, 2) > size(Sylv, 1)
-            println("compressing Sylv...")
+            verbose && println("compressing Sylv...")
             @time Sylv = Sylv * randn(size(Sylv, 2), size(Sylv, 1))
         end
         @time svdobj = svd(transpose(Sylv), full = true)
         firstzerosingval = findfirst(sv -> sv < rankTol * svdobj.S[1], svdobj.S)
         if !isnothing(firstzerosingval)
             rk = firstzerosingval - 1
-            println("       rank = $(rk)")
-            println("       relative size of last nz singular value = $(svdobj.S[rk]/svdobj.S[1])")
-            println("       gap = $(svdobj.S[rk]/svdobj.S[rk+1])")
+            verbose && println("       rank = $(rk)")
+            verbose && println("       relative size of last nz singular value = $(svdobj.S[rk]/svdobj.S[1])")
+            verbose && println("       gap = $(svdobj.S[rk]/svdobj.S[rk+1])")
         else
             rk = length(svdobj.S)
-            println("       relative size of last nz singular value = $(svdobj.S[rk]/svdobj.S[1])") end
+            verbose && println("       relative size of last nz singular value = $(svdobj.S[rk]/svdobj.S[1])")
+        end
         N = transpose(svdobj.V[:, rk+1:end])
     end
-    println("N has size $(size(N))")
+    verbose && println("N has size $(size(N))")
     #-------------------------------------------------------------------------
     Σ₀ = exptomon(E[1], x)
     Σα0 = exptomon(A₀, x)
     if check_criterion
-        println("Checking criterion...")
-        chck = checkCriterion(Σα0, Σ₀, Σ, N, x)
+        verbose && println("Checking criterion...")
+        chck = checkCriterion(Σα0, Σ₀, Σ, N, x; verbose = verbose)
     end
     #-------------------------------------------------------------------------
     if !check_criterion || chck
-        println("finding a basis using QR-P...")
+        verbose && println("finding a basis using QR-P...")
         @time M, κ = get_multmtces_QR_toric(N, Σ, Σ₀, Σα0, x; complex = complex)
         #-------------------------------------------------------------------------
-        println("extracting relevant eigenvalues...")
+        verbose && println("extracting relevant eigenvalues...")
         if schurfac
             @time monsol =
                 simulDiag_schur_toric(M; clustering = true, tol = 1e-4, complex = complex)
         else
             @time monsol = extractSolutions_fast(M, Σα0; tol = EVtol)
         end
+
         #-------------------------------------------------------------------------
-        println("inverting monomial map given by A₀...")
+        verbose && println("inverting monomial map given by A₀...")
         A₀2 = convert(Array{Int64,2}, A₀')
         zeroind = findfirst(ℓ -> norm(A₀2[:, ℓ]) == 0, 1:size(A₀2, 2))
         @time logsol, sol = solvebinom_SNF_array(A₀2, [ms / ms[zeroind] for ms ∈ monsol])
-        println("found $(length(sol)) solutions")
+        verbose && println("found $(length(sol)) solutions")
         if filter
-            println("filtering...")
+            verbose && println("filtering...")
             res = get_residual(f, sol, x)
             sol = sol[findall(r -> r < filtertol, res)]
         end
@@ -148,15 +153,15 @@ end
 # Check if N_{f₀} is of rank rank(N) for generic elements f₀ in span(Σα0).
 # Here N is the previously computed cokernel of a Sylvester map with support D.
 # The monomials in Σ₀ should correspond to E₀ and those in Σ to D.
-function checkCriterion(Σα0, Σ₀, Σ, N, x; rankTol = 1e3 * eps())
+function checkCriterion(Σα0, Σ₀, Σ, N, x; rankTol = 1e3 * eps(), verbose::Bool=false)
     f₀ = randn(ComplexF64, length(Σα0))' * Σα0
     M0 = getRes([f₀], Σ, [Σ₀], x; complex = true)
     r = rank(N * M0; rtol = rankTol)
     if r == size(N, 1)
-        println("********* criterion satisfied ********* γ = ", r)
+        verbose && println("********* criterion satisfied ********* γ = ", r)
         return true
     else
-        println("!!!!!!!!! criterion violated !!!!!!!!!")
+        verbose && println("!!!!!!!!! criterion violated !!!!!!!!!")
         return false
     end
 end
@@ -174,13 +179,13 @@ function get_multmtces_QR_toric(N, Σ_α_α₀, Σ_α, Σ_α₀, t; complex = fa
         Nᵢ = fill(fill(0.0, δ, length(Σ_α)), n_α₀)
         M = fill(fill(0.0, δ, δ), n_α₀) # This will contain the multiplication operators corresponding to the variables
     end
-
     for i = 1:n_α₀
         indsᵢ = map(k -> mapping[k*Σ_α₀[i]], Σ_α)
         Nᵢ[i] = N[:, indsᵢ]
     end
     if complex
-        Nh₀ = sum(randn(ComplexF64, n_α₀) .* Nᵢ)
+        randcoeff = randn(ComplexF64, n_α₀)
+        Nh₀ = sum( randcoeff.* Nᵢ)
     else
         Nh₀ = sum(randn(n_α₀) .* Nᵢ) # Dehomogenization with respect to a generic linear form.
     end
@@ -260,7 +265,7 @@ function extractSolutions_fast(M, Σα0; tol = 1e-5, clustertol = 1e-7)
     γ = size(Mg, 1)
     k = 1
     for i = 1:length(clusters)
-        λ = clusters[i]
+        λ = mean(clusters[i])
         Vλ = eigenvecs[:, inds[i]]
         if size(Vλ, 2) > 0
             if size(Vλ, 2) == 1
@@ -280,13 +285,12 @@ function extractSolutions_fast(M, Σα0; tol = 1e-5, clustertol = 1e-7)
             end
         end
         if length(eval) >= 1
-            Vλnew = hcat(espace...)
-            Vλ = Vλ * Vλnew'
+            Vλnew = vcat(espace...)
+            Vλ = Vλ * transpose(Vλnew)
             m = size(Vλ, 2)
             if m == 1 && !isnan(eval[1])
                 monsol = push!(monsol, [(transpose(Vλ)*MM*Vλ)[1] for MM ∈ M])
             elseif m > 1 && !isnan(eval[1])
-
                 O = randn(ComplexF64, γ, m)
                 aux = fill(0.0 + 0.0 * im, length(M))
                 for i = 1:length(M)
@@ -362,23 +366,30 @@ end
 
 # Compute an admissible tuple for a dense system of polynomials f by incrementing the degree
 # until our criterion is satisfied.
-function findAdmissibleTuple_dense(f, x, DMAX; complex = false, rankTol = 1e3 * eps())
+function findAdmissibleTuple_dense(f, x, DMAX; complex = false, rankTol = 1e3 * eps(), verbose::Bool=false, trySemiregular::Bool=false)
     s = length(f)
     ds = fill(0, s)
     for i = 1:s
         ds[i] = maximum(degree.(terms(f[i])))
     end
-    dmax = maximum(ds)
+    if trySemiregular
+        varTaylor = TaylorSeries.Taylor1(Integer,sum(ds))
+        HScandidate = prod(vv -> (1-varTaylor^vv),ds)/(1-varTaylor)^length(x)
+        dmax = max(findfirst(vv -> vv <= 0,HScandidate.coeffs)-1,maximum(ds))
+    else
+        dmax = maximum(ds)
+    end
+    verbose && println("degree = ", dmax)
     oldsupport = getMonomials(x, dmax)
     oldshifts = [getMonomials(x, dmax - ds[i]) for i = 1:s]
     Σα0 = getMonomials(x, 1)
     Σ₀ = getMonomials(x, dmax - 1)
     oldSylv = getRes(f, oldsupport, oldshifts, x; complex = complex)
     oldcokernel = transpose(nullspace(transpose(oldSylv), rtol = rankTol))
-    chck = checkCriterion(Σα0, Σ₀, oldsupport, oldcokernel, x)
+    chck = checkCriterion(Σα0, Σ₀, oldsupport, oldcokernel, x; verbose = verbose)
     while dmax < DMAX && !chck
         dmax = dmax + 1
-        println("degree = ", dmax)
+        verbose && println("degree = ", dmax)
         newsupport = getMonomials(x, dmax)
         newshifts = [getMonomials(x, dmax - ds[i]; homogeneous = true) for i = 1:s]
         newcokernel = updateCokernel(
@@ -395,7 +406,7 @@ function findAdmissibleTuple_dense(f, x, DMAX; complex = false, rankTol = 1e3 * 
         oldsupport = newsupport
         oldcokernel = newcokernel
         Σ₀ = getMonomials(x, dmax - 1)
-        chck = checkCriterion(Σα0, Σ₀, oldsupport, oldcokernel, x)
+        chck = checkCriterion(Σα0, Σ₀, oldsupport, oldcokernel, x; verbose = verbose)
     end
     topdeg = dmax
     A₀ = montoexp(getMonomials(x, 1))
@@ -416,6 +427,7 @@ function findAdmissibleTuple_unmixed(
     DMAX;
     complex = false,
     rankTol = 1e3 * eps(),
+    verbose::Bool=false
 )
     s = length(f)
     dmax = maximum(α)
@@ -434,10 +446,10 @@ function findAdmissibleTuple_unmixed(
     Σ₀ = exptomon(getLatticePoints(newtonPolytope(A₀pol^(dmax - 1), x)), x)
     oldSylv = getRes(f, oldsupport, oldshifts, x; complex = complex)
     oldcokernel = transpose(nullspace(transpose(oldSylv), rtol = rankTol))
-    chck = checkCriterion(Σα0, Σ₀, oldsupport, oldcokernel, x)
+    chck = checkCriterion(Σα0, Σ₀, oldsupport, oldcokernel, x; verbose = verbose)
     while dmax < DMAX && !chck
         dmax = dmax + 1
-        println("degree = ", dmax)
+        verbose && println("degree = ", dmax)
         newsupport = exptomon(getLatticePoints(newtonPolytope(A₀pol^(dmax), x)), x)
         newshifts = [
             setdiff(
@@ -457,7 +469,7 @@ function findAdmissibleTuple_unmixed(
         oldsupport = newsupport
         oldcokernel = newcokernel
         Σ₀ = exptomon(getLatticePoints(newtonPolytope(A₀pol^(dmax - 1), x)), x)
-        chck = checkCriterion(Σα0, Σ₀, oldsupport, oldcokernel, x; rankTol = rankTol)
+        chck = checkCriterion(Σα0, Σ₀, oldsupport, oldcokernel, x; rankTol = rankTol, verbose = verbose)
     end
     topdeg = dmax
     extdeg = topdeg .- α
@@ -478,8 +490,8 @@ end
 
 
 # Compute the kernel of a dense Sylvester map  supported in degree DMAX by using the 'degree by degree' procedure.
-function getKernel_dense_DBD(f, x, DMAX; complex = false, rankTol = 1e3 * eps())
-    println("Computing cokernel degree by degree...")
+function getKernel_dense_DBD(f, x, DMAX; complex = false, rankTol = 1e3 * eps(), verbose::Bool=false)
+    verbose && println("Computing cokernel degree by degree...")
     s = length(f)
     ds = fill(0, s)
     for i = 1:s
@@ -494,7 +506,7 @@ function getKernel_dense_DBD(f, x, DMAX; complex = false, rankTol = 1e3 * eps())
     oldcokernel = transpose(nullspace(transpose(oldSylv), rtol = rankTol))
     while dmax < DMAX
         dmax = dmax + 1
-        println("degree = ", dmax)
+        verbose && println("degree = ", dmax)
         newsupport = getMonomials(x, dmax)
         newshifts = [getMonomials(x, dmax - ds[i]; homogeneous = true) for i = 1:s]
         newcokernel = updateCokernel(
@@ -567,7 +579,7 @@ end
 
 # Solve a square, dense system of equations.
 # This uses the DBD method to compute the cokernel if DBD = true.
-function solve_CI_dense(f, x; DBD = true, complex = false, check_criterion = false)
+function solve_CI_dense(f, x; DBD = true, complex = false, check_criterion = false, verbose::Bool=false)
     if DBD
         n = length(x)
         s = n
@@ -576,7 +588,7 @@ function solve_CI_dense(f, x; DBD = true, complex = false, check_criterion = fal
             ds[i] = maximum(degree.(terms(f[i])))
         end
         dreg = sum(ds) - n + 1
-        cokernel, support, topdeg = getKernel_dense_DBD(f, x, dreg; complex = true)
+        cokernel, support, topdeg = getKernel_dense_DBD(f, x, dreg; complex = true, verbose = verbose)
         A₀ = montoexp(getMonomials(x, 1))
         extdeg = topdeg .- ds
         extdeg = [topdeg - 1; extdeg]
@@ -592,6 +604,7 @@ function solve_CI_dense(f, x; DBD = true, complex = false, check_criterion = fal
             N = cokernel,
             check_criterion = check_criterion,
             schurfac = true,
+            verbose = verbose,
         )
     else
         (A₀, E, D) = get_AT_CI_dense(f, x)
@@ -604,12 +617,13 @@ function solve_CI_dense(f, x; DBD = true, complex = false, check_criterion = fal
             complex = complex,
             check_criterion = check_criterion,
             schurfac = true,
+            verbose = verbose,
         )
     end
 end
 
 # Solve a square, multi-graded dense system of equations.
-function solve_CI_multi_dense(f, vargroups, ds; complex = false, check_criterion = false)
+function solve_CI_multi_dense(f, vargroups, ds; complex = false, check_criterion = false, verbose::Bool=false)
     (A₀, E, D) = get_AT_CI_multi_dense(f, vargroups,ds)
     solve_EV(
         f,
@@ -620,11 +634,12 @@ function solve_CI_multi_dense(f, vargroups, ds; complex = false, check_criterion
         complex = complex,
         check_criterion = check_criterion,
         schurfac = true,
+        verbose = verbose,
     )
 end
 
 # Solve a square, multi-unmixed system of equations.
-function solve_CI_multi_unmixed(f, vargroups, sups, ds; AT = nothing, complex = false, check_criterion = false)
+function solve_CI_multi_unmixed(f, vargroups, sups, ds; AT = nothing, complex = false, check_criterion = false, verbose::Bool=false)
     if isnothing(AT)
         (A₀, E, D) = get_AT_CI_multi_unmixed(f, vargroups, sups, ds)
     else
@@ -641,6 +656,7 @@ function solve_CI_multi_unmixed(f, vargroups, sups, ds; AT = nothing, complex = 
         complex = complex,
         check_criterion = check_criterion,
         schurfac = true,
+        verbose = verbose
     )
     return sol, A₀, E, D
 end
@@ -719,7 +735,7 @@ end
 
 # Solve a square, sparse polynomial system which is generic with respect to its support,
 # in the sense of "Toric Eigenvalue Methods for Solving Sparse Polynomial Systems".
-function solve_CI_mixed(f, x; AT = nothing, complex = false)
+function solve_CI_mixed(f, x; AT = nothing, complex = false, verbose::Bool=false)
     if isnothing(AT)
         (A₀, E, D) = get_AT_CI_mixed(f, x)
     else
@@ -727,7 +743,7 @@ function solve_CI_mixed(f, x; AT = nothing, complex = false)
         E = AT[2]
         D = AT[3]
     end
-    sol = solve_EV(f, x, A₀, E, D; complex = complex)
+    sol = solve_EV(f, x, A₀, E, D; complex = complex, verbose = verbose)
     return sol, A₀, E, D
 end
 
@@ -770,7 +786,7 @@ end
 # Solve a square, sparse, unmixed polynomial system which is generic with respect to its support,
 # in the sense of "Toric Eigenvalue Methods for Solving Sparse Polynomial Systems".
 # !!!!!!!!!!!!!!!!!!! MAKE SURE A CONTAINS 0
-function solve_CI_unmixed(f, x, A, α; AT = nothing)
+function solve_CI_unmixed(f, x, A, α; AT = nothing, verbose::Bool=false)
     if isnothing(AT)
         (A₀, E, D) = get_AT_CI_unmixed(x, A, α)
     else
@@ -778,27 +794,27 @@ function solve_CI_unmixed(f, x, A, α; AT = nothing)
         E = AT[2]
         D = AT[3]
     end
-    sol = solve_EV(f, x, A₀, E, D)
+    sol = solve_EV(f, x, A₀, E, D; verbose = verbose)
     return sol, A₀, E, D
 end
 
 # Solve an overdetermined system of dense equations.
-function solve_OD_dense(f, x; maxdeg = 100, complex = false, rankTol = 1e3*eps())
-    println("Looking for an admissible tuple")
+function solve_OD_dense(f, x; maxdeg = 100, complex = false, verbose::Bool=false, trySemiregular::Bool=false)
+    verbose && println("Looking for an admissible tuple")
     cokernel, support, chck, topdeg, AT =
-        findAdmissibleTuple_dense(f, x, maxdeg; complex = true)
+        findAdmissibleTuple_dense(f, x, maxdeg; complex = true, verbose = verbose, trySemiregular = trySemiregular)
     (A₀, E, D) = AT
-    sol = solve_EV(f, x, A₀, E, D; N = cokernel, complex = complex, check_criterion = false, rankTol = rankTol)
+    sol = solve_EV(f, x, A₀, E, D; N = cokernel, complex = complex, check_criterion = false, verbose = verbose)
     return sol
 end
 
 # Solve an overdetermined system of sparse unmixed equations.
-function solve_OD_unmixed(f, x, A, α; maxdeg = 100, complex = false)
-    println("Looking for an admissible tuple")
+function solve_OD_unmixed(f, x, A, α; maxdeg = 100, complex = false, verbose::Bool=false)
+    verbose && println("Looking for an admissible tuple")
     cokernel, support, chck, topdeg, AT =
-        findAdmissibleTuple_unmixed(f, x, A, α, maxdeg; complex = true)
+        findAdmissibleTuple_unmixed(f, x, A, α, maxdeg; complex = true, verbose = verbose)
     (A₀, E, D) = AT
-    sol = solve_EV(f, x, A₀, E, D; N = cokernel, complex = complex, check_criterion = false)
+    sol = solve_EV(f, x, A₀, E, D; N = cokernel, complex = complex, check_criterion = false, verbose = verbose)
     return sol
 end
 
@@ -898,15 +914,15 @@ function simulDiag_schur_mtx(M; clustering = false, tol = 1e-4, complex = false)
     if clustering
         oF = ordschur(F, fill(true, δ))
         v = diag(oF.Schur)
-        clusvec = getClusters(v; tol = tol)
-        push!(clusvec, δ + 1)
+        clusters, clusvec = getClusters(v; tol = tol)
+        push!(clusvec, [δ + 1])
         Q = oF.Z
         for i = 1:n
             Uᵢ = Q' * M[i] * Q
             eᵢ = fill(zero(ComplexF64), δ)
             for j = 1:length(clusvec)-1
-                i₀ = clusvec[j]
-                i₁ = clusvec[j+1] - 1
+                i₀ = clusvec[j][1]
+                i₁ = clusvec[j+1][1] - 1
                 ev = tr(Uᵢ[i₀:i₁, i₀:i₁]) / (i₁ - i₀ + 1)
                 eᵢ[i₀:i₁] .= ev
             end
@@ -925,23 +941,27 @@ function simulDiag_schur_mtx(M; clustering = false, tol = 1e-4, complex = false)
     return solMatrix
 end
 
-# returns a vector clusvec with the indices of the start of each cluster in v.
+# returns a vector clusters such that clusters[i] contains the entries of v in the i-th cluster,
+# and a vector clusvec such that v[clusvec[i]] = clusters[i].
 # v is a vector of complex number which is assumed to be ordered, e.g. coming from an ordered Schur factorization
 function getClusters(v; tol = 1e-4)
-    clus = [v[1]]
-    clusvec = [1]
+    clusters = [[v[1]]]
+    clusvec = [[1]]
     k = 2
     while k <= length(v)
-        center = mean(clus)
-        if abs(v[k] - center) < tol * (abs(center) + 1)
-            push!(clus, v[k])
+        centers = [mean(clus) for clus ∈ clusters]
+        distances = [abs(v[k] - c) for c ∈ centers]
+        if minimum(distances) < tol
+            ind = argmin(distances)
+            push!(clusters[ind],v[k])
+            push!(clusvec[ind],k)
         else
-            push!(clusvec, k)
-            clus = [v[k]]
+            push!(clusvec,[k])
+            push!(clusters,[v[k]])
         end
         k = k + 1
     end
-    return clusvec
+    return clusters, clusvec
 end
 
 end
