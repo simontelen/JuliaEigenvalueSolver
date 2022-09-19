@@ -139,7 +139,7 @@ function getRes(f, Σ, σ, x; complex = false)
     end
     n = length(x)
     s = length(f)
-    mapping = Dict(Σ[i] => i for i = 1:length(Σ))
+    mapping = Dict(Σ .=> 1:length(Σ)) # be carefull, if the Σ is a 1xn matrix, then use Dict(Σ[i] => i for i = 1:length(Σ))
     for i = 1:s
         J = sum(map(k -> length(k), σ[1:i-1]))
         for j = 1:length(σ[i])
