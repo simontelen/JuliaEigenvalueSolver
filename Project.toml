@@ -1,0 +1,4 @@
+name = "EigenvalueSolver"
+uuid = "678e3805-c322-49de-aa76-96beab6c89e5"
+authors = ["Matias Bender and Simon Telen"]
+version = "0.1.0"
